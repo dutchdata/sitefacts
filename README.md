@@ -6,19 +6,20 @@ and a `--check` that fails CI when a file is stale.
 ```sh
 cargo install sitefacts
 sitefacts init > facts.json        # an example to edit
+sitefacts sync                     # list your public GitHub repositories + crates into code.json
 sitefacts build                    # writes the stale outputs under site/
 sitefacts build --check            # exit 1 if any output is stale (CI, pre-commit, deploy scripts)
 sitefacts show llms.txt            # print one output instead of writing it
 ```
 
-Inputs: `facts.json` and `site/index.html` (its `<title>`, its body text, and a block between
+Inputs: `facts.json`, `code.json` beside it when `sync` has written one, and `site/index.html` (its `<title>`, its body text, and a block between
 `<!-- machine:begin` and `<!-- machine:end -->` in the head that gets rewritten). Outputs, all under `site/`:
 
 | file | what |
 |---|---|
 | `index.html` (head block only) | meta description, robots, canonical, discovery links, `rel="me"` for every profile, Open Graph, Twitter card, inline JSON-LD |
-| `organization.jsonld` | the same schema.org graph (Organization, WebSite, WebPage, ImageObject), one fetch |
-| `llms.txt` | the llmstxt.org summary: description, the home page's text verbatim, facts, pages, profiles, retrieval notes |
+| `organization.jsonld` | the same schema.org graph (Organization, WebSite, WebPage, ImageObject, a WebSite per listed site, a SoftwareSourceCode per repository), one fetch |
+| `llms.txt` | the llmstxt.org summary: description, the home page's text verbatim, facts, pages, sites, code, profiles, retrieval notes |
 | `llms-full.txt` | everything on the site in one file, plus policies and the graph |
 | `ai.txt` | usage policy for AI systems, with an optional attribution-parameter request |
 | `humans.txt` | who runs the site and how it is built |
@@ -45,15 +46,35 @@ Optional, each adding its section or field when present: `kind` ("research compa
 summary, image, updated), `indexnow_key`, `url_note`, `one_line`, `pages_intro`, `retrieval_notes`, `ai_notes`,
 `attribution` (`{name, values}`), `privacy`, `humans` (`does`, `built_with`, `analytics`, `hosted_on`,
 `standards`, `pages`), `manifest` (`display`, `theme_color`, `background_color`), `nav_class` (block elements
-with this class are navigation, not page text; default `apps`). Unknown keys are ignored, so the file can carry
-your own notes (`_doc`).
+with this class are navigation, not page text; default `apps`), `sites` (other public hosts you run: `name`,
+`url`, `summary`, `note`), `code` (repositories listed by hand), `sync` (below). Unknown keys are ignored, so
+the file can carry your own notes (`_doc`).
+
+## Public code: `sitefacts sync`
+
+The code hosts already know what you publish, so the site should not keep a second copy by hand.
+
+```json
+"sync": { "github": "yourname", "crates": "yourname", "exclude": ["scratch"], "forks": false, "archived": false }
+```
+
+`sitefacts sync` asks the GitHub API for the account's public repositories (name, description, language,
+license, homepage, last push) and crates.io for the account's crates (version, docs), matches crates to
+repositories by URL, and writes `code.json` next to `facts.json`: sorted, stable, meant to be committed.
+`build` merges it in; every entry becomes a line under "## Code" in llms.txt and llms-full.txt, a
+`SoftwareSourceCode` node in the graph (with `author`, `license`, `sameAs` to the package and docs pages), and
+a count in humans.txt. `sync --check` exits 1 when the file would change, so a daily job can run `sync`,
+`build` and your deploy only when something moved. Repositories without a description are reported on stderr;
+the fix belongs on GitHub, not in the facts. Unauthenticated GitHub allows 60 calls an hour; set `GITHUB_TOKEN`
+if you have more than 6,000 repositories. `sync` is the only network code in the crate and sits behind the
+default `sync` feature.
 
 ## Guarantees
 
 - Same facts and page → same bytes, on any machine. `--check` compares bytes.
 - Text is wrapped at 78 columns exactly as Python's `textwrap` does (the files were born there; diffs stay small).
 - JSON-LD is written once and used twice (inline and standalone), with `</` escaped in the inline copy.
-- No network. Nothing outside `site/` is touched.
+- `build` and `check` use no network. Nothing outside `site/` (and `code.json`, for `sync`) is touched.
 
 ## Where it came from
 

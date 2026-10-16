@@ -3,9 +3,10 @@
 //! ```text
 //! sitefacts build            rewrite the outputs under site/ (stale ones only)
 //! sitefacts build --check    exit 1 if any output is stale; write nothing
+//! sitefacts sync             list public repositories (GitHub) and packages (crates.io) into code.json
 //! ```
 //!
-//! Inputs: `facts.json` ([`Facts`]) and `site/index.html` (its `<title>` and body text, and the block between
+//! Inputs: `facts.json` ([`Facts`]), `code.json` beside it when `sitefacts sync` has written one, and `site/index.html` (its `<title>` and body text, and the block between
 //! `<!-- machine:begin` and `<!-- machine:end -->` that gets rewritten). Outputs, all under `site/`:
 //! the head block in index.html, organization.jsonld, llms.txt, llms-full.txt, ai.txt, humans.txt, robots.txt,
 //! sitemap.xml, .well-known/security.txt, site.webmanifest + manifest.json, and the IndexNow key file.
@@ -18,6 +19,8 @@ pub mod graph;
 pub mod html;
 pub mod image;
 pub mod outputs;
+#[cfg(feature = "sync")]
+pub mod sync;
 pub mod wrap;
 
 pub use facts::Facts;
@@ -86,8 +89,9 @@ pub struct Run { pub written: Vec<String>, pub stale: Vec<String>, pub total: us
 
 /// Build (or with `check`, only compare) the outputs for a site rooted at `root` (facts.json + site/).
 pub fn run(facts_path: &Path, site: &Path, check: bool) -> Result<Run, String> {
-    let f = Facts::parse(&std::fs::read_to_string(facts_path).map_err(|e| format!("{}: {e}", facts_path.display()))?)?;
-    let (problems, warnings) = check_inputs(&f, site);
+    let f = Facts::load(facts_path)?;
+    let (problems, mut warnings) = check_inputs(&f, site);
+    if f.sync.is_some() && !Facts::code_path(facts_path).is_file() { warnings.push("sync is configured but code.json is missing: run `sitefacts sync`".into()); }
     if !problems.is_empty() { return Err(problems.join("; ")); }
     let index = site.join("index.html");
     let doc = std::fs::read_to_string(&index).map_err(|e| format!("{}: {e}", index.display()))?;

@@ -26,6 +26,9 @@ fn facts_json() -> String {
   "pages": [{"path": "/tool/", "title": "Tool", "summary": "A tool.", "image": "/og.png"}],
   "attribution": {"name": "ai", "values": ["openai", "other"]},
   "humans": {"built_with": "One page.", "hosted_on": "A bucket."},
+  "sites": [{"name": "Portal", "url": "https://portal.example.com/", "summary": "Where clients sign in", "note": "sign-in"}],
+  "code": [{"name": "hand", "url": "https://github.com/example/hand", "description": "Listed by hand"}],
+  "sync": {"github": "example"},
   "_doc": "ignored"
 }"#.to_string()
 }
@@ -40,6 +43,11 @@ fn setup(root: &Path) {
     fs::write(site.join("logo.png"), png(64, 64)).unwrap();
     fs::write(site.join("og.png"), png(1200, 630)).unwrap();
     fs::write(site.join("tool/index.html"), "<html><title>Tool</title><body><p>x</p></body></html>").unwrap();
+    fs::write(root.join("code.json"), r#"[
+  {"name": "hand", "url": "https://github.com/example/hand", "description": "duplicate, ignored"},
+  {"name": "tool", "url": "https://github.com/example/tool", "description": "A tool", "language": "Rust", "license": "MIT", "registry": "https://crates.io/crates/tool", "version": "0.2.0", "docs": "https://docs.rs/tool", "updated": "2026-10-15"},
+  {"name": "forked", "url": "https://github.com/example/forked", "description": "", "fork": true}
+]"#).unwrap();
 }
 
 #[test]
@@ -70,6 +78,10 @@ fn builds_everything_then_check_is_clean() {
     assert!(llms.contains("- [Tool](https://www.example.com/tool/): A tool."));
     assert!(llms.contains("?ai=openai, ?ai=other"));
     assert!(llms.contains("EXAMPLE, INC. (Example) is a studio."));
+    assert!(llms.contains("## Sites\n\n- [Portal](https://portal.example.com/): Where clients sign in. (sign-in)\n"), "{llms}");
+    assert!(llms.contains("## Code\n\n- [hand](https://github.com/example/hand): Listed by hand.\n- [tool](https://github.com/example/tool): A tool. Rust. Package: https://crates.io/crates/tool (0.2.0). Updated 2026-10-15.\n- [forked](https://github.com/example/forked): Fork.\n"), "{llms}");
+    assert_eq!(llms.matches("example/hand").count(), 1, "facts entry wins over code.json duplicate");
+    assert!(llms.contains("under Code are the company"));
 
     let graph: serde_json::Value = serde_json::from_str(&fs::read_to_string(site.join("organization.jsonld")).unwrap()).unwrap();
     let org = &graph["@graph"][0];
@@ -77,6 +89,17 @@ fn builds_everything_then_check_is_clean() {
     assert_eq!(org["knowsAbout"][0]["sameAs"], "https://www.wikidata.org/wiki/Q7397");
     assert!(org.get("duns").is_none(), "no duns → no duns fields");
     assert_eq!(graph["@graph"][2]["text"], "Example We make small tools. One");
+    let nodes = graph["@graph"].as_array().unwrap();
+    assert_eq!(nodes.len(), 4 + 1 + 3);
+    assert_eq!(nodes[4]["@type"], "WebSite");
+    assert_eq!(nodes[4]["publisher"]["@id"], "https://www.example.com/#organization");
+    let tool = nodes.iter().find(|n| n["name"] == "tool").unwrap();
+    assert_eq!(tool["@type"], "SoftwareSourceCode");
+    assert_eq!(tool["license"], "https://spdx.org/licenses/MIT");
+    assert_eq!(tool["sameAs"], serde_json::json!(["https://crates.io/crates/tool", "https://docs.rs/tool"]));
+    assert_eq!(tool["author"]["@id"], "https://www.example.com/#organization");
+    let forked = nodes.iter().find(|n| n["name"] == "forked").unwrap();
+    assert!(forked.get("author").is_none() && forked["maintainer"]["@id"] == "https://www.example.com/#organization" && forked.get("description").is_none());
     let inline_start = index.find(r#"<script type="application/ld+json">"#).unwrap();
     assert!(index[inline_start..].contains("\"@type\": \"Organization\""));
 
@@ -88,6 +111,7 @@ fn builds_everything_then_check_is_clean() {
     assert!(sec.contains("Canonical: https://www.example.com/.well-known/security.txt\nCanonical: https://example.com/.well-known/security.txt"));
     let humans = fs::read_to_string(site.join("humans.txt")).unwrap();
     assert!(humans.contains("    Pages:        2") && humans.contains("    Bluesky:      @example.com") && humans.contains("Hosted on:    A bucket."));
+    assert!(humans.contains("    Code:         3 public repositories, 1 published package; the list is in\n                  llms.txt."), "{humans}");
     let ai = fs::read_to_string(site.join("ai.txt")).unwrap();
     assert!(ai.contains("#     https://www.example.com/?ai=other        <- anything not listed above") && ai.contains("Attribution-parameter: ai=<openai|other>"));
 
@@ -96,6 +120,17 @@ fn builds_everything_then_check_is_clean() {
     fs::write(&facts, edited).unwrap();
     let r3 = sitefacts::run(&facts, &site, true).unwrap();
     assert_eq!(r3.stale, ["humans.txt", "llms-full.txt", "llms.txt"]);
+    sitefacts::run(&facts, &site, false).unwrap();
+
+    // So does a code.json edit (it feeds the graph too, so the page and the jsonld go stale as well).
+    fs::write(root.join("code.json"), r#"[{"name": "tool", "url": "https://github.com/example/tool", "description": "A better tool"}]"#).unwrap();
+    let r4 = sitefacts::run(&facts, &site, true).unwrap();
+    assert_eq!(r4.stale, ["humans.txt", "index.html", "llms-full.txt", "llms.txt", "organization.jsonld"]);
+
+    // Without code.json, the configured sync is a warning, not an error.
+    fs::remove_file(root.join("code.json")).unwrap();
+    let r5 = sitefacts::run(&facts, &site, true).unwrap();
+    assert!(r5.warnings.iter().any(|w| w.contains("code.json is missing")), "{:?}", r5.warnings);
 }
 
 #[test]

@@ -32,6 +32,12 @@ enum Cmd {
     Show { name: Option<String>, #[arg(long)] all: bool },
     /// Print an example facts.json to start from
     Init,
+    /// Fetch the public repositories and packages named under "sync" in facts.json and write code.json
+    Sync {
+        /// Exit 1 if code.json would change; write nothing
+        #[arg(long)]
+        check: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -43,7 +49,7 @@ fn main() -> Result<()> {
         Cmd::Build { check } => run(&facts, &site, check),
         Cmd::Check => run(&facts, &site, true),
         Cmd::Show { name, all } => {
-            let f = sitefacts::Facts::parse(&std::fs::read_to_string(&facts)?).map_err(anyhow::Error::msg)?;
+            let f = sitefacts::Facts::load(&facts).map_err(anyhow::Error::msg)?;
             let doc = std::fs::read_to_string(site.join("index.html"))?;
             let outs = sitefacts::outputs(&f, &doc).map_err(anyhow::Error::msg)?;
             match (name, all) {
@@ -54,8 +60,31 @@ fn main() -> Result<()> {
             Ok(())
         }
         Cmd::Init => { print!("{}", EXAMPLE); Ok(()) }
+        Cmd::Sync { check } => sync(&facts, check),
     }
 }
+
+#[cfg(feature = "sync")]
+fn sync(facts: &std::path::Path, check: bool) -> Result<()> {
+    let f = sitefacts::Facts::parse(&std::fs::read_to_string(facts)?).map_err(anyhow::Error::msg)?;
+    let cfg = f.sync.clone().unwrap_or_default();
+    let r = sitefacts::sync::run(&cfg).map_err(anyhow::Error::msg)?;
+    for n in &r.notes { eprintln!("note: {n}"); }
+    let path = sitefacts::Facts::code_path(facts);
+    let text = sitefacts::sync::to_json(&r.code);
+    let packages = r.code.iter().filter(|c| c.registry.is_some()).count();
+    let same = std::fs::read_to_string(&path).ok().as_deref() == Some(text.as_str());
+    if check {
+        if same { println!("ok: {} current ({} entries, {packages} packages)", path.display(), r.code.len()); return Ok(()); }
+        bail!("{} would change (run sitefacts sync)", path.display());
+    }
+    if !same { std::fs::write(&path, text)?; }
+    println!("{}: {} entries, {packages} packages, {}", path.display(), r.code.len(), if same { "unchanged" } else { "written" });
+    Ok(())
+}
+
+#[cfg(not(feature = "sync"))]
+fn sync(_: &std::path::Path, _: bool) -> Result<()> { bail!("this build has no sync: cargo install sitefacts --features sync") }
 
 fn run(facts: &std::path::Path, site: &std::path::Path, check: bool) -> Result<()> {
     let r = sitefacts::run(facts, site, check).map_err(anyhow::Error::msg)?;
@@ -88,6 +117,8 @@ const EXAMPLE: &str = r#"{
   "page_images": [],
   "pages": [],
   "attribution": { "name": "ai", "values": ["openai", "anthropic", "google", "apple", "other"] },
+  "sites": [{ "name": "Example Portal", "url": "https://portal.example.com/", "summary": "Where clients sign in.", "note": "sign-in" }],
+  "sync": { "github": "example", "crates": "example", "exclude": [] },
   "humans": { "built_with": "One hand-written HTML page.", "hosted_on": "Static hosting" }
 }
 "#;

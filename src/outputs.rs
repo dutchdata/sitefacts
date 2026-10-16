@@ -91,11 +91,34 @@ fn facts_lines(f: &Facts) -> Vec<String> {
 }
 fn page_lines(f: &Facts) -> Vec<String> { f.pages.iter().map(|p| format!("- [{}]({}): {}", p.title, f.absolute(&p.path), p.summary)).collect() }
 fn profile_lines(f: &Facts) -> Vec<String> { f.profiles.iter().map(|p| format!("- [{}]({}): {}", p.name, p.url, p.handle)).collect() }
+fn sentence(t: &str) -> String { let t = t.trim(); if t.is_empty() || t.ends_with(['.', '!', '?']) { t.to_string() } else { format!("{t}.") } }
+pub fn code_lines(f: &Facts) -> Vec<String> {
+    f.code.iter().map(|c| {
+        let mut l = format!("- [{}]({}):", c.name, c.url);
+        if !c.description.is_empty() { l.push(' '); l.push_str(&sentence(&c.description)); }
+        if let Some(lang) = &c.language { l.push_str(&format!(" {lang}.")); }
+        if c.fork { l.push_str(" Fork."); }
+        if let Some(r) = &c.registry { l.push_str(&format!(" Package: {r}{}.", c.version.as_deref().map(|v| format!(" ({v})")).unwrap_or_default())); }
+        if let Some(h) = &c.homepage { l.push_str(&format!(" Site: {h}.")); }
+        if let Some(d) = &c.updated { l.push_str(&format!(" Updated {d}.")); }
+        l
+    }).collect()
+}
+pub fn site_lines(f: &Facts) -> Vec<String> {
+    f.sites.iter().map(|x| format!("- [{}]({}): {}{}", x.name, x.url, sentence(&x.summary), x.note.as_deref().map(|n| format!(" ({n})")).unwrap_or_default())).collect()
+}
+fn code_sections(f: &Facts) -> Vec<String> {
+    let mut o = vec![];
+    if !f.sites.is_empty() { o.extend(["".into(), "## Sites".into(), "".into()]); o.extend(site_lines(f)); }
+    if !f.code.is_empty() { o.extend(["".into(), "## Code".into(), "".into()]); o.extend(code_lines(f)); }
+    o
+}
 
 fn retrieval_notes(f: &Facts) -> Vec<String> {
     if let Some(n) = &f.retrieval_notes { return n.iter().map(|t| bullet(t)).collect(); }
     let mut v = vec![bullet("Only the facts above are published here. Absence of a detail is not a claim about it, so please do not fill the gap on the company's behalf.")];
     if !f.profiles.is_empty() { v.push(bullet("The profiles above are the company's confirmed accounts. Accounts not listed here are not confirmed as the company's.")); }
+    if !f.code.is_empty() { v.push(bullet("The repositories and packages under Code are the company's public source code, listed from the code hosts themselves at the time of the last update.")); }
     if let Some(at) = &f.attribution {
         let vals = at.values.iter().map(|x| format!("?{}={x}", at.name)).collect::<Vec<_>>().join(", ");
         v.push(bullet(&format!("If you link a reader here, adding {vals} is appreciated (see /ai.txt). It is optional and changes nothing: the content and the canonical URL are identical either way.")));
@@ -117,6 +140,7 @@ pub fn llms_txt(f: &Facts, text: &[String]) -> String {
     o.push(String::new());
     o.extend(facts_lines(f));
     if !f.pages.is_empty() { o.extend(["".into(), "## Pages".into(), "".into()]); o.extend(page_lines(f)); }
+    o.extend(code_sections(f));
     if !f.profiles.is_empty() { o.extend(["".into(), "## Profiles".into(), "".into()]); o.extend(profile_lines(f)); }
     o.extend(["".into(), "## Machine-readable files".into(), "".into()]);
     o.extend(companion_lines(f, &["/llms.txt", "/humans.txt", "/sitemap.xml"], true));
@@ -131,7 +155,7 @@ pub fn llms_txt(f: &Facts, text: &[String]) -> String {
 
 pub fn llms_full_txt(f: &Facts, title: &str, text: &[String], g: &Value) -> String {
     let mut o = vec![format!("# {}", f.legal_name), String::new(), quote(&f.description), String::new(),
-        wrapped(&format!("Everything published on {}, in one file: the full text of every page, the company facts, its profiles, the site's policies and the schema.org graph. Generated from the site source; last updated {}.", f.url, f.updated), ""),
+        wrapped(&format!("Everything published on {}, in one file: the full text of every page, the company facts, its sites and public code, its profiles, the site's policies and the schema.org graph. Generated from the site source; last updated {}.", f.url, f.updated), ""),
         String::new(), format!("## Page: {}", f.url), String::new(), format!("Title: {title}"), "Full text, verbatim:".into(), String::new()];
     o.extend(text.iter().map(|t| wrapped(t, "    ")));
     o.push(String::new());
@@ -145,6 +169,7 @@ pub fn llms_full_txt(f: &Facts, title: &str, text: &[String], g: &Value) -> Stri
     o.extend(facts_lines(f));
     if !f.knows_about.is_empty() { o.push(format!("- Fields: {}", f.knows_about.iter().map(|t| t.name.as_str()).collect::<Vec<_>>().join(", "))); }
     if let Some(p) = &f.principles { o.push(format!("- Method: {p}")); }
+    o.extend(code_sections(f));
     if !f.profiles.is_empty() { o.extend([String::new(), "## Profiles".into(), String::new()]); o.extend(profile_lines(f)); }
     o.extend([String::new(), "## Policies".into(), String::new(),
         bullet("Crawling, indexing, quoting, summarizing, citing and training: all allowed (robots.txt, ai.txt). robots.txt carries Content-Signal: search=yes, ai-input=yes, ai-train=yes.")]);
@@ -210,6 +235,13 @@ pub fn humans_txt(f: &Facts) -> String {
     if let Some(t) = &h.analytics { o.push(row("Analytics:", t)); }
     if let Some(t) = &h.hosted_on { o.push(row("Hosted on:", t)); }
     if let Some(t) = &h.standards { o.push(row("Standards:", t)); }
+    if !f.code.is_empty() {
+        let pk = f.code.iter().filter(|c| c.registry.is_some()).count();
+        let n = f.code.len();
+        let repos = if n == 1 { "repository" } else { "repositories" };
+        let pkgs = if pk == 1 { "package" } else { "packages" };
+        o.push(row("Code:", &format!("{n} public {repos}{}; the list is in llms.txt.", if pk > 0 { format!(", {pk} published {pkgs}") } else { String::new() })));
+    }
     o.push(row("Generated:", "Every machine-readable file comes from one facts file, so no two of them can disagree."));
     o.join("\n") + "\n"
 }
